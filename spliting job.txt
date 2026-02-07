@@ -1,0 +1,39 @@
+1️⃣ Computer Vision / Gesture
+
+Owns: gesture_model.py
+
+Does: MediaPipe gestures, confidence tuning
+
+Delivers: Working gesture detection + confusion matrix
+
+2️⃣ Control & Safety
+
+Owns: gesture_mapper.py, safety.py
+
+Does: stability, cooldown, emergency stop
+
+Delivers: Safe control logic, no unsafe commands
+
+3️⃣ Drone & Simulator
+
+Owns: drone_interface.py, simulator.py
+
+Does: Tello SDK, telemetry, SIM↔DRONE match
+
+Delivers: Reliable drone control + simulator
+
+4️⃣ GUI & Experiments
+
+Owns: gui.py
+
+Does: live display, labeling, experiment flow
+
+Delivers: Usable GUI, clean data collection
+
+5️⃣ Research & Analysis
+
+Owns: docs/, analysis.ipynb
+
+Does: metrics, plots, report
+
+Delivers: Final figures + hypothesis results
