@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual env
+.venv/
+venv/
+
+# Test
+.pytest_cache/
+
+# Local data/output
+/data/
+/results/
+/logs/
+
+# Misc
+*.log
