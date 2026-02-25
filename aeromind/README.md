@@ -47,7 +47,7 @@ aeromind/
 1. (Recommended) Create a virtual environment
     python -m venv venv
     venv\Scripts\activate
-
+      source venv/bin/activate
 2. Install dependencies:
    pip install -r requirements.txt
 3. Run the system:
