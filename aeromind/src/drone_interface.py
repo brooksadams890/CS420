@@ -4,121 +4,169 @@ import time
 
 
 class DroneInterface:
-    """
-    Real DJI Tello Drone Interface (SDK 2.0)
-
-    - Command channel: UDP 8889
-    - State channel:   UDP 8890
-    """
-
     TELLO_IP = "192.168.10.1"
     CMD_PORT = 8889
     STATE_PORT = 8890
-    TIMEOUT = 5.0
 
-    def __init__(self, enabled: bool = False):
+    def __init__(
+        self,
+        enabled: bool = False,
+        *,
+        local_cmd_port: int = 9000,   # fixed local port = stable reconnect
+        cmd_timeout: float = 3.0,
+    ):
         self.enabled = enabled
-        self.cmd_sock = None
-        self.state_sock = None
-        self.state = {
-            "battery_pct": None,
-            "height_cm": None
-        }
-        self._running = False
+        self.local_cmd_port = local_cmd_port
+        self.cmd_timeout = cmd_timeout
 
-    # =========================
-    # CONNECT
-    # =========================
+        self.cmd_sock: socket.socket | None = None
+        self.state_sock: socket.socket | None = None
+
+        self.state = {"battery_pct": None, "height_cm": None}
+
+        self._running = False
+        self._state_thread: threading.Thread | None = None
+        self._cmd_lock = threading.Lock()
+
+    # ---------------------------
+    # Public API
+    # ---------------------------
     def connect(self) -> bool:
         if not self.enabled:
             print("[Drone] SIM mode")
             return True
 
+        # if you call connect twice, do the safe thing
+        self.close()
+
         try:
             print("[Drone] Connecting to Tello...")
 
-            # Command socket
+            # Command socket: bind to a FIXED local port
             self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.cmd_sock.settimeout(self.TIMEOUT)
+            self.cmd_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.cmd_sock.bind(("0.0.0.0", self.local_cmd_port))
+            self.cmd_sock.settimeout(self.cmd_timeout)
 
-            # State socket
+            # State socket: bind to 8890 for telemetry
             self.state_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.state_sock.bind(("", self.STATE_PORT))
+            self.state_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.state_sock.bind(("0.0.0.0", self.STATE_PORT))
+            self.state_sock.settimeout(0.2)  # small timeout so loop can stop fast
 
-            # Enter SDK mode
-            self._send_cmd("command")
+            # Enter SDK mode (retry because UDP can drop)
+            self._send_cmd("command", expect_ok=True, retries=5)
 
-            # Start telemetry thread
+            # Start telemetry thread (NOT daemon) so we can join on shutdown
             self._running = True
-            threading.Thread(target=self._state_loop, daemon=True).start()
+            self._state_thread = threading.Thread(target=self._state_loop, name="tello-state")
+            self._state_thread.start()
 
             print("[Drone] Connected (SDK mode)")
             return True
 
         except Exception as e:
             print(f"[Drone] Connection failed: {e}")
-            self.enabled = False
+            self.close()
             return False
 
-    # =========================
-    # SEND COMMAND
-    # =========================
     def send_command(self, cmd: str) -> bool:
         if not self.enabled:
             return True
 
         try:
-            self._send_cmd(cmd)
+            # serialize commands so responses don't get mixed
+            self._send_cmd(cmd, expect_ok=True, retries=2)
             return True
         except Exception as e:
             print(f"[Drone] Command failed ({cmd}): {e}")
             return False
 
-    # =========================
-    # TELEMETRY
-    # =========================
     def poll_state(self):
         return self.state
 
-    def _state_loop(self):
-        while self._running:
+    def close(self):
+        # try to stop stream first while socket still alive
+        if self.enabled and self.cmd_sock:
             try:
-                data, _ = self.state_sock.recvfrom(1024)
-                self._parse_state(data.decode("utf-8"))
+                # dont retry much on shutdown
+                self._send_cmd("streamoff", expect_ok=True, retries=1)
             except:
                 pass
 
+        # stop thread
+        self._running = False
+        if self._state_thread and self._state_thread.is_alive():
+            self._state_thread.join(timeout=1.0)
+        self._state_thread = None
+
+        # close sockets
+        if self.state_sock:
+            try: self.state_sock.close()
+            except: pass
+            self.state_sock = None
+
+        if self.cmd_sock:
+            try: self.cmd_sock.close()
+            except: pass
+            self.cmd_sock = None
+    # ---------------------------
+    # Internals
+    # ---------------------------
+    def _state_loop(self):
+        while self._running and self.state_sock:
+            try:
+                data, _ = self.state_sock.recvfrom(2048)
+                self._parse_state(data.decode("utf-8", errors="ignore"))
+            except socket.timeout:
+                continue
+            except OSError:
+                # socket got closed while waiting
+                break
+            except Exception:
+                continue
+
     def _parse_state(self, msg: str):
-        """
-        Example:
-        bat:87;h:0;tof:10;...
-        """
         parts = msg.strip().split(";")
         for p in parts:
             if ":" not in p:
                 continue
-            k, v = p.split(":")
+            k, v = p.split(":", 1)
             if k == "bat":
-                self.state["battery_pct"] = int(v)
-            if k == "h":
-                self.state["height_cm"] = int(v)
+                try:
+                    self.state["battery_pct"] = int(v)
+                except:
+                    pass
+            elif k == "h":
+                try:
+                    self.state["height_cm"] = int(v)
+                except:
+                    pass
 
-    # =========================
-    # LOW-LEVEL SEND
-    # =========================
-    def _send_cmd(self, cmd: str):
-        self.cmd_sock.sendto(cmd.encode("utf-8"), (self.TELLO_IP, self.CMD_PORT))
-        resp, _ = self.cmd_sock.recvfrom(1024)
-        resp = resp.decode("utf-8").strip()
-        if resp != "ok":
-            raise RuntimeError(f"Tello error: {resp}")
+    def _send_cmd(self, cmd: str, *, expect_ok: bool, retries: int = 1) -> str:
+        if not self.cmd_sock:
+            raise RuntimeError("Command socket not initialized")
 
-    # =========================
-    # CLEANUP
-    # =========================
-    def close(self):
-        self._running = False
-        if self.cmd_sock:
-            self.cmd_sock.close()
-        if self.state_sock:
-            self.state_sock.close()
+        last_err: Exception | None = None
+
+        # IMPORTANT: lock so only one command waits for a response at a time
+        with self._cmd_lock:
+            for _ in range(max(1, retries)):
+                try:
+                    self.cmd_sock.sendto(cmd.encode("utf-8"), (self.TELLO_IP, self.CMD_PORT))
+                    data, _ = self.cmd_sock.recvfrom(1024)
+                    resp = data.decode("utf-8", errors="ignore").strip()
+
+                    if resp.lower() == "error":
+                        raise RuntimeError("Tello returned error")
+
+                    if expect_ok and resp.lower() != "ok":
+                        raise RuntimeError(f"Unexpected response: {resp}")
+
+                    return resp
+
+                except Exception as e:
+                    last_err = e
+                    time.sleep(0.15)
+
+        raise last_err if last_err else RuntimeError("Unknown send_cmd failure")

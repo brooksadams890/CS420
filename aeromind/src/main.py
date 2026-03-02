@@ -96,10 +96,23 @@ def main():
     # =========================
     # DRONE CONNECTION
     # =========================
+ 
     ok = drone.connect()
     if use_drone and not ok:
         print("[WARN] Drone connection failed. Falling back to SIM.")
         drone.enabled = False
+
+    if use_drone and drone.enabled:
+        from tello_video_source import TelloVideoSource
+        cam = TelloVideoSource(drone)
+
+        if not cam.start():
+            print("[WARN] Tello video failed. Falling back to webcam.")
+            cam.release()
+            cam = Camera()
+    else:
+        cam = Camera()
+
 
     # =========================
     # MAIN LOOP STATE
@@ -116,9 +129,8 @@ def main():
 
             # ---- CAMERA ----
             ok, frame = cam.read()
-            if not ok:
-                print("[ERROR] Camera read failed.")
-                break
+            if not ok or frame is None:
+                continue
 
             # ---- GESTURE PREDICTION ----
             pred = model.predict(frame)
@@ -227,6 +239,8 @@ def main():
         print("[AeroMind] Shutting down.")
         cam.release()
         gui.close()
+        drone.close()   # <-- ADD THIS
+
         logger.close()
 
 
