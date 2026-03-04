@@ -4,35 +4,47 @@ import javafx.application.Platform;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 
-import java.io.*;
+import java.io.BufferedInputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 public class MjpegStreamReader {
 
     private final String url;
     private final ImageView target;
+    private final Runnable frameCallback;
+    private final Consumer<String> errorCallback;
 
     private volatile boolean running = false;
     private Thread thread;
 
-    // prevent FX queue spam
     private final AtomicBoolean updatePending = new AtomicBoolean(false);
     private final AtomicReference<Image> latestImage = new AtomicReference<>(null);
 
-    // cap UI updates (fps)
-    private final long minUiIntervalNs = 1_000_000_000L / 15; // 15 FPS max
+    private final long minUiIntervalNs = 1_000_000_000L / 15;
     private volatile long lastUiUpdateNs = 0;
 
     public MjpegStreamReader(String url, ImageView target) {
+        this(url, target, null, null);
+    }
+
+    public MjpegStreamReader(String url, ImageView target, Runnable frameCallback, Consumer<String> errorCallback) {
         this.url = url;
         this.target = target;
+        this.frameCallback = frameCallback;
+        this.errorCallback = errorCallback;
     }
 
     public void start() {
-        if (running) return;
+        if (running) {
+            return;
+        }
         running = true;
 
         thread = new Thread(this::runLoop, "mjpeg-reader");
@@ -43,7 +55,10 @@ public class MjpegStreamReader {
     public void stop() {
         running = false;
         if (thread != null) {
-            try { thread.join(800); } catch (InterruptedException ignored) {}
+            try {
+                thread.join(800);
+            } catch (InterruptedException ignored) {
+            }
         }
     }
 
@@ -54,7 +69,7 @@ public class MjpegStreamReader {
         try {
             conn = (HttpURLConnection) new URL(url).openConnection();
             conn.setConnectTimeout(1500);
-            conn.setReadTimeout(0); // streaming, do NOT timeout read
+            conn.setReadTimeout(0);
             conn.connect();
 
             in = new BufferedInputStream(conn.getInputStream());
@@ -92,19 +107,27 @@ public class MjpegStreamReader {
             }
 
         } catch (Exception e) {
-            System.out.println("[UI] MJPEG error: " + e.getMessage());
+            reportError("MJPEG error: " + e.getMessage());
         } finally {
-            try { if (in != null) in.close(); } catch (Exception ignored) {}
-            if (conn != null) conn.disconnect();
+            try {
+                if (in != null) {
+                    in.close();
+                }
+            } catch (Exception ignored) {
+            }
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
     }
 
     private void handleFrame(byte[] jpgBytes) {
         long now = System.nanoTime();
-        if (now - lastUiUpdateNs < minUiIntervalNs) return; // drop frames
+        if (now - lastUiUpdateNs < minUiIntervalNs) {
+            return;
+        }
         lastUiUpdateNs = now;
 
-        // decode OFF JavaFX thread
         Image img;
         try {
             img = new Image(new ByteArrayInputStream(jpgBytes), 0, 0, true, true);
@@ -114,16 +137,26 @@ public class MjpegStreamReader {
 
         latestImage.set(img);
 
-        // schedule only one FX update at a time
         if (updatePending.compareAndSet(false, true)) {
             Platform.runLater(() -> {
                 try {
                     Image latest = latestImage.getAndSet(null);
-                    if (latest != null) target.setImage(latest);
+                    if (latest != null) {
+                        target.setImage(latest);
+                        if (frameCallback != null) {
+                            frameCallback.run();
+                        }
+                    }
                 } finally {
                     updatePending.set(false);
                 }
             });
+        }
+    }
+
+    private void reportError(String message) {
+        if (errorCallback != null) {
+            errorCallback.accept(message);
         }
     }
 }
