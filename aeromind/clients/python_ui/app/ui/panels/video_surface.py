@@ -48,6 +48,8 @@ class VideoSurface(QWidget):
         self._is_live = False
         self._current_status = "No Signal"
         self._compact_mode = False
+        self._latest_video_pixmap = QPixmap()
+        self._latest_gesture_preview_pixmap = QPixmap()
 
         palette = self.palette()
         palette.setColor(QPalette.Window, QColor("#020617"))
@@ -89,6 +91,19 @@ class VideoSurface(QWidget):
         self.gesture_hud_label.hide()
         self.gesture_hud_label.raise_()
 
+        self.gesture_preview_label = QLabel("", self.overlay_container)
+        self.gesture_preview_label.setObjectName("gesturePreviewLabel")
+        self.gesture_preview_label.setAlignment(Qt.AlignCenter)
+        self.gesture_preview_label.setScaledContents(False)
+        self.gesture_preview_label.setStyleSheet(
+            "background-color: rgba(2, 6, 23, 210);"
+            "border: 1px solid rgba(125, 211, 252, 170);"
+            "border-radius: 10px;"
+        )
+        self.gesture_preview_label.setText("Gesture cam")
+        self.gesture_preview_label.hide()
+        self.gesture_preview_label.raise_()
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.video_label.setGeometry(self.rect())
@@ -104,6 +119,12 @@ class VideoSurface(QWidget):
         hud_width = min(280 if self._compact_mode else 320, max(180, self.width() // 3))
         hud_height = 108 if self._compact_mode else 126
         self.gesture_hud_label.setGeometry(hud_margin, hud_margin, hud_width, hud_height)
+        preview_width = 300 if not self._compact_mode else 240
+        preview_height = 220 if not self._compact_mode else 170
+        preview_x = self.width() - preview_width - hud_margin
+        preview_top_offset = badge_margin + badge_height + 12
+        preview_y = preview_top_offset
+        self.gesture_preview_label.setGeometry(preview_x, preview_y, preview_width, preview_height)
 
     def set_compact_mode(self, compact: bool) -> None:
         compact = bool(compact)
@@ -126,6 +147,7 @@ class VideoSurface(QWidget):
             self.set_stream_live(False)
             return
 
+        self._latest_video_pixmap = pixmap.copy()
         scaled = pixmap.scaled(
             self.video_label.size(),
             Qt.KeepAspectRatio,
@@ -180,3 +202,36 @@ class VideoSurface(QWidget):
             return
         self.gesture_hud_label.clear()
         self.gesture_hud_label.hide()
+
+    def set_gesture_preview_pixmap(self, pixmap: QPixmap) -> None:
+        if pixmap.isNull():
+            self._latest_gesture_preview_pixmap = QPixmap()
+            self.gesture_preview_label.clear()
+            self.gesture_preview_label.setText("Gesture cam")
+            self.gesture_preview_label.hide()
+            return
+
+        self._latest_gesture_preview_pixmap = pixmap.copy()
+        scaled = pixmap.scaled(
+            self.gesture_preview_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        self.gesture_preview_label.setPixmap(scaled)
+        self.gesture_preview_label.show()
+
+    def latest_video_pixmap(self) -> QPixmap:
+        if not self._latest_video_pixmap.isNull():
+            return self._latest_video_pixmap.copy()
+        pixmap = self.video_label.pixmap()
+        if pixmap is None:
+            return QPixmap()
+        return pixmap.copy()
+
+    def latest_gesture_preview_pixmap(self) -> QPixmap:
+        if not self._latest_gesture_preview_pixmap.isNull():
+            return self._latest_gesture_preview_pixmap.copy()
+        pixmap = self.gesture_preview_label.pixmap()
+        if pixmap is None:
+            return QPixmap()
+        return pixmap.copy()

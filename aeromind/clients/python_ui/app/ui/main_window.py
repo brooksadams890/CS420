@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from datetime import datetime
+
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
@@ -126,6 +129,7 @@ class MainWindow(QMainWindow):
     def _connect_worker_signals(self) -> None:
         self.runtime.connect_workers(
             on_frame_ready=self.video_surface.set_video_pixmap,
+            on_gesture_preview_ready=self.video_surface.set_gesture_preview_pixmap,
             on_inference_ready=self._on_inference_ready,
             on_stream_status_changed=self._on_stream_status_changed,
             on_status_updated=self._on_status_updated,
@@ -422,6 +426,10 @@ class MainWindow(QMainWindow):
         debug_state = self.runtime.process_inference_update(update, on_api_error=self._on_status_error)
         if debug_state is None:
             return
+        if debug_state.get("resolved_command") == "snapshot" and bool(debug_state.get("dispatch_allowed")):
+            snapshot_path = self._save_current_video_snapshot()
+            if snapshot_path is not None:
+                self.app_state.set_command_status(status="snapshot_saved", error=str(snapshot_path))
         self._sync_gesture_panel_from_state(debug_state)
 
     def _on_status_updated(self, status_data: dict, state_data: object, diag_data: dict) -> None:
@@ -504,23 +512,30 @@ class MainWindow(QMainWindow):
         self.gesture_debug_panel.detector_label.setText(
             f"Detector: {self._format_detector_status(detector_status, detector_available)}"
         )
-        stable_label = self._safe_debug_text(state.get("stable_label") or state.get("stable"))
-        self.gesture_debug_panel.stable_label.setText(f"Stable: {stable_label}")
+        self.gesture_debug_panel.raw_label.setText(f"Raw: {self._safe_debug_text(state.get('raw'))}")
+        self.gesture_debug_panel.stable_label.setText(f"Stable: {self._safe_debug_text(state.get('stable'))}")
 
         confidence = state.get("confidence")
         self.gesture_debug_panel.confidence_label.setText(
             f"Confidence: {confidence:.2f}" if isinstance(confidence, float) else "Confidence: --"
         )
-        self.gesture_debug_panel.last_command_label.setText(
-            f"Last Command: {self._safe_debug_text(self.app_state.health.last_command_status)}"
-        )
+        last_status = self._safe_debug_text(self.app_state.health.last_command_status)
+        if last_status == "snapshot_saved" and self.app_state.health.last_command_error:
+            path = self.app_state.health.last_command_error
+            self.gesture_debug_panel.last_command_label.setText(f"Last Command: SNAPSHOT SAVED")
+            self.gesture_debug_panel.queue_label.setText(f"Queue: saved | File: {path}")
+        else:
+            self.gesture_debug_panel.last_command_label.setText(
+                f"Last Command: {last_status}"
+            )
         queue_state = self._safe_queue_text(state.get("queue_state"))
+        current_label = self._safe_debug_text(self.gesture_logger.get_current_label())
         session_state = "ACTIVE" if self.gesture_logger.is_session_active() else "INACTIVE"
         participant_id = self.gesture_logger.get_session_context()["participant_id"]
         self.gesture_debug_panel.session_state_label.setText(
-            f"Session: {session_state} | Participant: {participant_id} | Gesture: {stable_label}"
+            f"Session: {session_state} | Participant: {participant_id} | Label: {current_label}"
         )
-        self.gesture_debug_panel.queue_label.setText(f"Queue: {queue_state}")
+        self.gesture_debug_panel.queue_label.setText(f"Queue: {queue_state} | Label: {current_label}")
         self.video_surface.set_gesture_hud_text(
             self._build_live_gesture_hud_text(state, detector_status=detector_status),
             visible=self.app_state.gesture_enabled,
@@ -529,6 +544,42 @@ class MainWindow(QMainWindow):
         button.style().unpolish(button)
         button.style().polish(button)
         button.update()
+
+
+    def _save_current_video_snapshot(self) -> Path | None:
+        pixmap = self.video_surface.latest_video_pixmap()
+        snapshot_kind = "drone"
+        if pixmap.isNull():
+            pixmap = self.video_surface.latest_gesture_preview_pixmap()
+            snapshot_kind = "gesture"
+        if pixmap.isNull():
+            live_video = self.video_surface.video_label.grab()
+            if not live_video.isNull():
+                pixmap = live_video
+                snapshot_kind = "drone"
+        if pixmap.isNull():
+            live_preview = self.video_surface.gesture_preview_label.grab()
+            if not live_preview.isNull():
+                pixmap = live_preview
+                snapshot_kind = "gesture"
+        if pixmap.isNull():
+            whole_surface = self.video_surface.grab()
+            if not whole_surface.isNull():
+                pixmap = whole_surface
+                snapshot_kind = "surface"
+        if pixmap.isNull():
+            return None
+        base_dir = Path.home() / "Pictures" / "AeroMind"
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            base_dir = Path.cwd() / "AeroMindSnapshots"
+            base_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        snapshot_path = base_dir / f"{snapshot_kind}_snapshot_{timestamp}.png"
+        if pixmap.save(str(snapshot_path), "PNG"):
+            return snapshot_path
+        return None
 
     def _on_stream_status_changed(self, text: str) -> None:
         if self._is_shutting_down:
@@ -573,7 +624,8 @@ class MainWindow(QMainWindow):
         confidence = state.get("confidence")
         confidence_text = f"{confidence:.2f}" if isinstance(confidence, float) else "--"
         resolved_command = self._safe_debug_text(state.get("resolved_command"))
-        stable_gesture = self._safe_debug_text(state.get("stable_label") or state.get("stable"))
+        raw_gesture = self._safe_debug_text(state.get("raw"))
+        stable_gesture = self._safe_debug_text(state.get("stable"))
         controller_queue_state = self._safe_queue_text(state.get("controller_queue_state") or state.get("queue_state"))
         latched_terminal = self._safe_debug_text(state.get("latched_terminal_command"))
         detector_text = self._format_detector_status(
@@ -583,10 +635,11 @@ class MainWindow(QMainWindow):
         safe_cap = "ON" if self.app_state.mode == "drone" and self.app_state.gesture_enabled else "OFF"
         return "\n".join(
             [
-                f"Gesture {stable_gesture}",
+                f"Raw {raw_gesture} | Stable {stable_gesture}",
                 f"Cmd {resolved_command} | Conf {confidence_text}",
                 f"Queue {controller_queue_state} | Detector {detector_text}",
                 f"Latch {latched_terminal} | Safe Cap {safe_cap}",
+                "OK sign = save photo | Spock = full 360 spin | Middle finger = front flip",
             ]
         )
 

@@ -156,6 +156,16 @@ COMMAND_REGISTRY = {
         "args": {},
         "category": "safety",
     },
+    "flip": {
+        "description": "Perform a Tello flip in a direction.",
+        "args": {
+            "direction": {
+                "type": "string",
+                "required": True,
+            },
+        },
+        "category": "acrobatics",
+    },
     "diag": {
         "description": "Trigger a diagnostics snapshot on the running controller.",
         "args": {},

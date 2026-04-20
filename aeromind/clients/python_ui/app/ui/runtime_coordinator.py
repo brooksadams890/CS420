@@ -89,7 +89,7 @@ class ClientRuntimeCoordinator:
             drop_frames_on_reconnect=self.config.video_drop_frames_on_reconnect,
             inference_emit_interval_ms=self.config.gesture_inference_interval_ms(),
             perf_log_interval_ms=self.config.performance_log_interval_ms,
-            frame_sink=self._inference_frame_buffer.submit,
+            frame_sink=None,
         )
         self.video_worker.moveToThread(self.video_thread)
         self.video_thread.started.connect(self.video_worker.start)
@@ -149,12 +149,14 @@ class ClientRuntimeCoordinator:
         self,
         *,
         on_frame_ready: Callable[[object], None],
+        on_gesture_preview_ready: Callable[[object], None],
         on_inference_ready: Callable[[object], None],
         on_stream_status_changed: Callable[[str], None],
         on_status_updated: Callable[[dict, object, dict], None],
         on_status_error: Callable[[str], None],
     ) -> None:
         self.video_worker.frameReady.connect(on_frame_ready)
+        self.gesture_video_worker.frameReady.connect(on_gesture_preview_ready)
         self.inference_worker.inferenceReady.connect(on_inference_ready)
         self.video_worker.streamStatusChanged.connect(on_stream_status_changed)
         self.status_worker.statusUpdated.connect(on_status_updated)
@@ -173,7 +175,7 @@ class ClientRuntimeCoordinator:
         )
         self.status_thread.start()
         self.video_thread.start()
-        # Shared webcam/display worker also feeds inference frames; do not start a second webcam capture.
+        self.gesture_video_thread.start()
         self.inference_thread.start()
         self._started = True
 
@@ -184,11 +186,11 @@ class ClientRuntimeCoordinator:
         gesture_debug_log("thread.runtime_stop_requested")
         self._safe_stop_worker(self.status_worker)
         self._safe_stop_worker(self.video_worker)
-        # gesture_video_worker is intentionally not started; avoid opening the webcam twice.
+        self._safe_stop_worker(self.gesture_video_worker)
         self._safe_stop_worker(self.inference_worker)
         self._safe_quit_thread(self.status_thread, 5000)
         self._safe_quit_thread(self.video_thread, 5000)
-        # gesture_video_thread is intentionally not started.
+        self._safe_quit_thread(self.gesture_video_thread, 5000)
         self._safe_quit_thread(self.inference_thread, 5000)
         self._started = False
         gesture_debug_log(
@@ -317,11 +319,15 @@ class ClientRuntimeCoordinator:
                     dispatch_attempted=True,
                     detector_available=result.detector_available,
                 )
-                dispatch_result = self._call_api(
-                    lambda: self.app_controller.command_controller.execute_gesture_command(command_name),
-                    on_api_error=on_api_error,
-                    command_status="sent",
-                )
+                if command_name == "snapshot":
+                    dispatch_result = {"ok": True, "command": "snapshot", "raw_command": "snapshot"}
+                    self.app_state.set_command_status(status="snapshot", error=None)
+                else:
+                    dispatch_result = self._call_api(
+                        lambda: self.app_controller.command_controller.execute_gesture_command(command_name),
+                        on_api_error=on_api_error,
+                        command_status="sent",
+                    )
                 # Timestamp taken immediately after the API call returns to the client.
                 dispatch_finished_at = monotonic()
                 dispatch_end_ms = self._monotonic_to_ms(dispatch_finished_at)

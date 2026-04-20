@@ -40,16 +40,16 @@ class GestureThresholdConfig:
 @dataclass(slots=True)
 class GestureStabilityConfig:
     # Gesture stabilization and controller-side debounce live here.
-    stability_frames: int = 3
-    dominance_frames: int = 2
-    one_shot_stabilization_ms: int = 320
-    movement_stabilization_ms: int = 160
-    stability_reset_debounce_ms: int = 220
+    stability_frames: int = 2
+    dominance_frames: int = 1
+    one_shot_stabilization_ms: int = 120
+    movement_stabilization_ms: int = 70
+    stability_reset_debounce_ms: int = 90
 
-    # More forgiving so one-shot gestures do not get released instantly on hand loss.
-    release_window_ms: int = 650
-    hover_stop_grace_ms: int = 650
-    hover_command_cooldown_ms: int = 1000
+    # Keep the drone responsive, but still fall back to hover when the hand is lost.
+    release_window_ms: int = 220
+    hover_stop_grace_ms: int = 220
+    hover_command_cooldown_ms: int = 250
 
     def stabilization_ms_for_gesture(self, gesture_name: str | None, *, behavior_type: str | None) -> int:
         gesture = get_gesture_definition(gesture_name)
@@ -63,13 +63,13 @@ class GestureStabilityConfig:
 @dataclass(slots=True)
 class GestureMotionConfig:
     # Continuous movement resend/cooldown and RC command shaping live here.
-    movement_resend_interval_ms: int = 150
-    movement_cooldown_ms: int = 140
-    movement_fast_path_confidence: float = 0.85
-    default_rc_speed: int = 40
-    forward_rc_speed: int = 35
-    left_right_rc_speed: int = 35
-    yaw_rc_speed: int = 30
+    movement_resend_interval_ms: int = 70
+    movement_cooldown_ms: int = 60
+    movement_fast_path_confidence: float = 0.72
+    default_rc_speed: int = 55
+    forward_rc_speed: int = 45
+    left_right_rc_speed: int = 45
+    yaw_rc_speed: int = 40
     per_command_rc_speed: dict[str, int] = field(default_factory=dict)
     move_distance_cm: int = 50
     rotation_degrees: int = 90
@@ -92,19 +92,19 @@ class GestureMotionConfig:
 @dataclass(slots=True)
 class GestureDirectionConfig:
     # Point-up tilt direction anti-jitter controls live here.
-    tilt_neutral_dead_zone: float = 0.04
-    tilt_enter_threshold: float = 0.09
-    tilt_exit_threshold: float = 0.06
-    direction_min_hold_ms: int = 120
+    tilt_neutral_dead_zone: float = 0.03
+    tilt_enter_threshold: float = 0.07
+    tilt_exit_threshold: float = 0.05
+    direction_min_hold_ms: int = 70
     direction_stabilization_hits: int = 1
-    tilt_smoothing_alpha: float = 0.55
+    tilt_smoothing_alpha: float = 0.4
 
 
 @dataclass(slots=True)
 class GestureTerminalConfig:
     # Terminal one-shot latching and duplicate suppression live here.
     terminal_command_latch_enabled: bool = True
-    terminal_command_cooldown_ms: int = 1200
+    terminal_command_cooldown_ms: int = 700
 
     # Critical fix:
     # terminal commands should not require the hand to remain visible
@@ -122,7 +122,7 @@ class GestureEnvironmentConfig:
 @dataclass(slots=True)
 class GestureInferenceConfig:
     # Camera/inference throughput and detector bypass knobs live here.
-    max_fps: int = 25
+    max_fps: int = 30
     input_width: int = 320
     input_height: int = 240
     process_every_nth_frame: int = 1

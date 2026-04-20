@@ -8,6 +8,7 @@ from typing import Any
 
 from app.config import AppConfig
 from app.gestures.gesture_tilt_extractor import extract_point_up_tilt
+import math
 from app.gestures.registry import SUPPORTED_GESTURES, get_gesture_definition_by_recognizer_label
 from app.gestures.types import DetectorStatus, RawGestureSample
 from app.utils.logging_utils import gesture_debug_log
@@ -32,6 +33,154 @@ gesture_debug_log(
     success=_MEDIAPIPE_IMPORT_ERROR is None,
     error=_format_exception(_MEDIAPIPE_IMPORT_ERROR),
 )
+
+
+def _distance(a: Any, b: Any) -> float:
+    ax = float(getattr(a, "x", 0.0))
+    ay = float(getattr(a, "y", 0.0))
+    bx = float(getattr(b, "x", 0.0))
+    by = float(getattr(b, "y", 0.0))
+    return math.hypot(ax - bx, ay - by)
+
+
+def _is_finger_extended(tip: Any, pip: Any) -> bool:
+    return float(getattr(tip, "y", 1.0)) < float(getattr(pip, "y", 1.0))
+
+
+def _is_finger_curled(tip: Any, pip: Any, *, margin: float = 0.015) -> bool:
+    return float(getattr(tip, "y", 0.0)) >= (float(getattr(pip, "y", 0.0)) - margin)
+
+
+def _extract_landmarks(result: Any) -> list[Any] | None:
+    hand_landmarks = getattr(result, "hand_landmarks", None)
+    if not hand_landmarks or not hand_landmarks[0] or len(hand_landmarks[0]) < 21:
+        return None
+    return hand_landmarks[0]
+
+
+def _detect_pointing_left_right(result: Any) -> str | None:
+    landmarks = _extract_landmarks(result)
+    if landmarks is None:
+        return None
+    wrist = landmarks[0]
+    index_mcp = landmarks[5]
+    middle_pip = landmarks[10]
+    ring_pip = landmarks[14]
+    pinky_pip = landmarks[18]
+    index_tip = landmarks[8]
+    index_pip = landmarks[6]
+    middle_tip = landmarks[12]
+    ring_tip = landmarks[16]
+    pinky_tip = landmarks[20]
+
+    palm_scale = max(_distance(wrist, index_mcp), 1e-6)
+    dx = float(getattr(index_tip, "x", 0.0)) - float(getattr(index_mcp, "x", 0.0))
+    dy = float(getattr(index_tip, "y", 0.0)) - float(getattr(index_mcp, "y", 0.0))
+
+    index_extended = _is_finger_extended(index_tip, index_pip)
+    middle_curled = _is_finger_curled(middle_tip, middle_pip)
+    ring_curled = _is_finger_curled(ring_tip, ring_pip)
+    pinky_curled = _is_finger_curled(pinky_tip, pinky_pip)
+
+    if not (index_extended and middle_curled and ring_curled and pinky_curled):
+        return None
+    if abs(dx) < palm_scale * 0.55:
+        return None
+    if abs(dx) <= abs(dy) * 1.15:
+        return None
+    return "point_right" if dx > 0 else "point_left"
+
+
+def _detect_middle_finger_sign(result: Any) -> bool:
+    landmarks = _extract_landmarks(result)
+    if landmarks is None:
+        return False
+    wrist = landmarks[0]
+    middle_mcp = landmarks[9]
+    index_tip = landmarks[8]
+    index_pip = landmarks[6]
+    middle_tip = landmarks[12]
+    middle_pip = landmarks[10]
+    ring_tip = landmarks[16]
+    ring_pip = landmarks[14]
+    pinky_tip = landmarks[20]
+    pinky_pip = landmarks[18]
+
+    palm_scale = max(_distance(wrist, middle_mcp), 1e-6)
+    middle_extended = _is_finger_extended(middle_tip, middle_pip)
+    index_curled = _is_finger_curled(index_tip, index_pip)
+    ring_curled = _is_finger_curled(ring_tip, ring_pip)
+    pinky_curled = _is_finger_curled(pinky_tip, pinky_pip)
+    extension = float(getattr(middle_pip, "y", 1.0)) - float(getattr(middle_tip, "y", 1.0))
+    return bool(middle_extended and index_curled and ring_curled and pinky_curled and extension >= palm_scale * 0.45)
+
+
+def _detect_spock_sign(result: Any) -> bool:
+    hand_landmarks = getattr(result, "hand_landmarks", None)
+    if not hand_landmarks or not hand_landmarks[0] or len(hand_landmarks[0]) < 21:
+        return False
+    landmarks = hand_landmarks[0]
+    wrist = landmarks[0]
+    index_mcp = landmarks[5]
+    middle_mcp = landmarks[9]
+    ring_mcp = landmarks[13]
+    pinky_mcp = landmarks[17]
+    thumb_tip = landmarks[4]
+    thumb_ip = landmarks[3]
+    index_tip = landmarks[8]
+    index_pip = landmarks[6]
+    middle_tip = landmarks[12]
+    middle_pip = landmarks[10]
+    ring_tip = landmarks[16]
+    ring_pip = landmarks[14]
+    pinky_tip = landmarks[20]
+    pinky_pip = landmarks[18]
+
+    palm_scale = max(_distance(wrist, middle_mcp), _distance(index_mcp, pinky_mcp), 1e-6)
+    index_extended = _is_finger_extended(index_tip, index_pip)
+    middle_extended = _is_finger_extended(middle_tip, middle_pip)
+    ring_extended = _is_finger_extended(ring_tip, ring_pip)
+    pinky_extended = _is_finger_extended(pinky_tip, pinky_pip)
+    thumb_extended = _distance(thumb_tip, thumb_ip) > palm_scale * 0.12
+
+    gap_index_middle = _distance(index_tip, middle_tip)
+    gap_middle_ring = _distance(middle_tip, ring_tip)
+    gap_ring_pinky = _distance(ring_tip, pinky_tip)
+
+    return bool(
+        thumb_extended
+        and index_extended
+        and middle_extended
+        and ring_extended
+        and pinky_extended
+        and gap_middle_ring >= palm_scale * 0.40
+        and gap_index_middle <= palm_scale * 0.34
+        and gap_ring_pinky <= palm_scale * 0.34
+    )
+
+def _detect_ok_sign(result: Any) -> bool:
+    hand_landmarks = getattr(result, "hand_landmarks", None)
+    if not hand_landmarks or not hand_landmarks[0] or len(hand_landmarks[0]) < 21:
+        return False
+    landmarks = hand_landmarks[0]
+    thumb_tip = landmarks[4]
+    index_tip = landmarks[8]
+    wrist = landmarks[0]
+    index_mcp = landmarks[5]
+    pinky_mcp = landmarks[17]
+    middle_tip = landmarks[12]
+    middle_pip = landmarks[10]
+    ring_tip = landmarks[16]
+    ring_pip = landmarks[14]
+    pinky_tip = landmarks[20]
+    pinky_pip = landmarks[18]
+
+    palm_scale = max(_distance(wrist, index_mcp), _distance(wrist, pinky_mcp), 1e-6)
+    thumb_index_distance = _distance(thumb_tip, index_tip)
+    middle_extended = _is_finger_extended(middle_tip, middle_pip)
+    ring_extended = _is_finger_extended(ring_tip, ring_pip)
+    pinky_extended = _is_finger_extended(pinky_tip, pinky_pip)
+    return thumb_index_distance <= palm_scale * 0.42 and middle_extended and ring_extended and pinky_extended
 
 
 class GestureRecognizerRuntime:
@@ -251,6 +400,23 @@ class GestureRecognizerRuntime:
                 gesture_name = self._map_recognizer_label(recognizer_label)
                 score = getattr(top, "score", None)
                 confidence = float(score) if score is not None else None
+            explicit_direction = _detect_pointing_left_right(result)
+            if _detect_spock_sign(result):
+                recognizer_label = "SPOCK_SIGN"
+                gesture_name = "spock"
+                confidence = max(float(confidence or 0.0), 0.96)
+            elif _detect_ok_sign(result):
+                recognizer_label = recognizer_label or "OK_SIGN"
+                gesture_name = "ok_sign"
+                confidence = max(float(confidence or 0.0), 0.93)
+            elif _detect_middle_finger_sign(result):
+                recognizer_label = "MIDDLE_FINGER"
+                gesture_name = "middle_finger"
+                confidence = max(float(confidence or 0.0), 0.96)
+            elif explicit_direction is not None:
+                recognizer_label = recognizer_label or explicit_direction.upper()
+                gesture_name = explicit_direction
+                confidence = max(float(confidence or 0.0), 0.91)
             if gesture_name == "point_up":
                 tilt_value, raw_direction, index_mcp_x, index_tip_x = extract_point_up_tilt(result)
         except Exception as exc:

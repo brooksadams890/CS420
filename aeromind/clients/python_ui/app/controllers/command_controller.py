@@ -44,6 +44,12 @@ class CommandController:
                 "rc",
                 {"left_right": 0, "forward_back": 0, "up_down": 0, "yaw": 0},
             )
+        if command_name == "spin_360":
+            first = self.send_named_command("cw", {"degrees": 180})
+            second = self.send_named_command("cw", {"degrees": 180})
+            return second if second is not None else first
+        if command_name == "trick_flip":
+            return self.send_named_command("flip", {"direction": "f"})
         movement_state = self.build_gesture_movement_state(command_name)
         if movement_state is not None:
             payload = movement_state.to_payload()
